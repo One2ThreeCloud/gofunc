@@ -3,10 +3,12 @@ module github.com/ottstask/gofunc
 go 1.20
 
 require (
+	github.com/fasthttp/websocket v1.5.4
 	github.com/getkin/kin-openapi v0.120.0
 	github.com/go-playground/validator/v10 v10.15.5
 	github.com/goccy/go-json v0.10.2
 	github.com/gorilla/schema v1.2.0
+	github.com/gorilla/websocket v1.5.0
 	github.com/iancoleman/strcase v0.3.0
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/stretchr/testify v1.8.4
@@ -24,12 +26,13 @@ require (
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/invopop/yaml v0.2.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/klauspost/compress v1.16.3 // indirect
+	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/leodido/go-urn v1.2.4 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/savsgio/gotils v0.0.0-20230208104028-c358bd845dee // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	golang.org/x/crypto v0.7.0 // indirect
 	golang.org/x/net v0.8.0 // indirect

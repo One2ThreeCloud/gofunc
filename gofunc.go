@@ -11,7 +11,10 @@ var globalServer = serve.NewServer()
 
 // Handle ...
 func Handle(handlers ...interface{}) {
-	globalServer.Handle(handlers...)
+	err := globalServer.Handle(handlers...)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func Use(m middleware.Middleware) *serve.Server {

@@ -8,26 +8,28 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/ottstask/gofunc/pkg/ecode"
-	"github.com/ottstask/gofunc/pkg/middleware"
+	"github.com/fasthttp/websocket"
 	"github.com/iancoleman/strcase"
 	"github.com/kelseyhightower/envconfig"
+	"github.com/ottstask/gofunc/pkg/ecode"
+	"github.com/ottstask/gofunc/pkg/middleware"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/automaxprocs/maxprocs"
 )
 
-var allowMethods = []string{"Get", "Post", "Delete", "PUT"}
+var allowMethods = []string{"Get", "Post", "Delete", "Put", "Stream"}
 
 type Server struct {
-	methods     map[string]map[string]methodFactory
-	api         *openapi
-	middlewares []middleware.Middleware
-	ctx         context.Context
-	cancelFunc  context.CancelFunc
-	addr        string
-	pathPrefix  string
-	pathMapping map[string]string
-	apiContent  []byte
+	methods       map[string]map[string]methodFactory
+	streamMethods map[string]bool
+	api           *openapi
+	middlewares   []middleware.Middleware
+	ctx           context.Context
+	cancelFunc    context.CancelFunc
+	addr          string
+	pathPrefix    string
+	pathMapping   map[string]string
+	apiContent    []byte
 
 	crossDomain bool
 }
@@ -43,11 +45,12 @@ type methodInfo struct {
 	handlerVal  reflect.Value
 	method      reflect.Method
 
-	httpMethod string
-	factory    methodFactory
-	reqType    reflect.Type
-	rspType    reflect.Type
-	path       string
+	httpMethod  string
+	factory     methodFactory
+	reqType     reflect.Type
+	rspType     reflect.Type
+	path        string
+	isWebsocket bool
 }
 
 func NewServer() *Server {
@@ -62,12 +65,13 @@ func NewServer() *Server {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	sv := &Server{
-		pathPrefix:  cfg.APIPath,
-		addr:        cfg.Addr,
-		ctx:         ctx,
-		cancelFunc:  cancelFunc,
-		methods:     make(map[string]map[string]methodFactory),
-		crossDomain: false,
+		pathPrefix:    cfg.APIPath,
+		addr:          cfg.Addr,
+		ctx:           ctx,
+		cancelFunc:    cancelFunc,
+		methods:       make(map[string]map[string]methodFactory),
+		streamMethods: make(map[string]bool),
+		crossDomain:   false,
 	}
 	sv.api = newOpenapi(cfg.APIPath)
 	sv.api.parseType("APIError", rspFieldTag, reflect.TypeOf(&ecode.APIError{}))
@@ -101,6 +105,9 @@ func (s *Server) Handle(handlers ...interface{}) error {
 			}
 			path := formatPath(s.pathPrefix, srvName, info.method.Name)
 			s.methods[info.httpMethod][path] = info.factory
+			if info.isWebsocket {
+				s.streamMethods[path] = true
+			}
 
 			info.path = path
 			s.api.addMethod(info)
@@ -165,19 +172,39 @@ func (s *Server) serve(fastReq *fasthttp.RequestCtx) {
 	// path to func
 	factory := s.getMethodFactory(method, path)
 	if factory == nil {
-		writeErrResponse(fastReq, &ecode.APIError{Code: 404, Message: "Request method/path not found"})
+		writeErrResponse(fastReq, &ecode.APIError{Code: 404, Message: fmt.Sprintf("Request %s %s not found", method, path)})
 		return
 	}
 	realMethod, req, rsp := factory()
 
 	var bs []byte
 	decoder := jsonDecoder
-	if method == "POST" || method == "PUT" {
+	var stream *streamImp
+	if s.streamMethods[path] {
+		err := upgrader.Upgrade(fastReq, func(conn *websocket.Conn) {
+			stream = rsp.(*streamImp)
+			stream.conn = conn
+			defer stream.close()
+			// read from websocket
+			var err error
+			_, bs, err = conn.ReadMessage()
+			if err != nil {
+				writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "read websocket message error: " + err.Error()})
+				return
+			}
+		})
+		if err != nil {
+			writeErrResponse(fastReq, &ecode.APIError{Code: ecode.ServerErrorCode, Message: "Upgrade websocket: " + err.Error()})
+			return
+		}
+
+	} else if method == "POST" || method == "PUT" {
 		bs = fastReq.PostBody()
 	} else {
 		bs = fastReq.URI().QueryString()
 		decoder = queryDecoder
 	}
+
 	if len(bs) > 0 {
 		if err := decoder(bs, req); err != nil {
 			writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "Decode request body failed: " + err.Error()})
@@ -242,6 +269,18 @@ func parseMethods(m *methodInfo) error {
 		return fmt.Errorf("first argment in %s.%s should be context.Context", handlerName, method.Name)
 	}
 
+	if req.Kind() != reflect.Ptr || req.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("the type of second argment in %s/%s should be pointer to struct", handlerName, method.Name)
+	}
+	if strings.HasPrefix(method.Name, "Stream") {
+		if rsp.Kind() != reflect.Interface || rsp.Name() != "SocketStream" {
+			return fmt.Errorf("the type of third argment in %s/%s should be *websocket.SocketStream", handlerName, method.Name)
+		}
+		m.isWebsocket = true
+	} else if rsp.Kind() != reflect.Ptr || rsp.Elem().Kind() != reflect.Struct {
+		return fmt.Errorf("the type of third argment in %s/%s should be pointer to struct", handlerName, method.Name)
+	}
+
 	ret := method.Type.Out(0)
 	if ret.PkgPath() != "" || ret.Name() != "error" {
 		return fmt.Errorf("return type in %s.%s should be error", handlerName, method.Name)
@@ -259,13 +298,22 @@ func parseMethods(m *methodInfo) error {
 		retValues := method.Func.Call(args)
 		ret := retValues[0].Interface()
 		if ret != nil {
+			// ingore close error message
+			if _, ok := ret.(*websocket.CloseError); ok {
+				return nil
+			}
 			return ret.(error)
 		}
 		return nil
 	}
 
 	m.factory = func() (middleware.MethodFunc, interface{}, interface{}) {
-		rspVal := reflect.New(rsp.Elem()).Interface()
+		var rspVal interface{}
+		if m.isWebsocket {
+			rspVal = &streamImp{}
+		} else {
+			rspVal = reflect.New(rsp.Elem()).Interface()
+		}
 		return callFunc, reflect.New(req.Elem()).Interface(), rspVal
 	}
 	m.reqType = req
@@ -276,17 +324,28 @@ func parseMethods(m *methodInfo) error {
 func formatPath(prefix, handlerName, methodName string) string {
 	handlerName = strings.TrimSuffix(handlerName, "Handler")
 	httpMethod := getHttpMethod(methodName)
+	if strings.HasPrefix(methodName, "Stream") {
+		handlerName += "-ws"
+		methodName = strings.TrimSuffix(methodName, "Stream")
+	} else {
+		methodName = strings.TrimSuffix(methodName, httpMethod)
+	}
 	methodName = strings.TrimSuffix(methodName, httpMethod)
 
 	handlerName = strcase.ToKebab(handlerName)
 	methodName = strcase.ToKebab(methodName)
-
+	if methodName == "" {
+		return fmt.Sprintf("%s%s", prefix, handlerName)
+	}
 	return fmt.Sprintf("%s%s/%s", prefix, handlerName, methodName)
 }
 
 func getHttpMethod(methodName string) string {
 	for _, v := range allowMethods {
 		if strings.HasPrefix(methodName, v) {
+			if v == "Stream" {
+				return "Get"
+			}
 			return v
 		}
 	}
