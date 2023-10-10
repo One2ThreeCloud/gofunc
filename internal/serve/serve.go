@@ -227,6 +227,7 @@ func (s *Server) serve(fastReq *fasthttp.RequestCtx) {
 				writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "read websocket message error: " + err.Error()})
 				return
 			}
+			decoder = queryDecoder
 			doCallFunc()
 		})
 		if err != nil {
