@@ -177,64 +177,69 @@ func (s *Server) serve(fastReq *fasthttp.RequestCtx) {
 	}
 	realMethod, req, rsp := factory()
 
-	var bs []byte
+	var reqBody []byte
 	decoder := jsonDecoder
+
+	doCallFunc := func() {
+		if len(reqBody) > 0 {
+			if err := decoder(reqBody, req); err != nil {
+				writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "Decode request body failed: " + err.Error()})
+				return
+			}
+		}
+
+		ctx := context.Background()
+
+		// Middleware
+		for i := range s.middlewares {
+			mware := s.middlewares[len(s.middlewares)-i-1]
+			realMethod = func(mm middleware.MethodFunc) middleware.MethodFunc {
+				return func(ctx context.Context, req, rsp interface{}) error {
+					return mware(ctx, fastReq, mm, req, rsp)
+				}
+			}(realMethod)
+		}
+		err := realMethod(ctx, req, rsp)
+		if err != nil {
+			writeErrResponse(fastReq, err)
+			return
+		}
+
+		fastReq.Response.Header.Set("Content-Type", "application/json")
+		reqBody, err = encoder(rsp)
+		if err != nil {
+			writeErrResponse(fastReq, fmt.Errorf("marshal rsp error: %v", err))
+		}
+		fastReq.Write(reqBody)
+	}
+
 	var stream *streamImp
 	if s.streamMethods[path] {
 		err := upgrader.Upgrade(fastReq, func(conn *websocket.Conn) {
 			stream = rsp.(*streamImp)
 			stream.conn = conn
 			defer stream.close()
+
 			// read from websocket
 			var err error
-			_, bs, err = conn.ReadMessage()
+			_, reqBody, err = conn.ReadMessage()
 			if err != nil {
 				writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "read websocket message error: " + err.Error()})
 				return
 			}
+			doCallFunc()
 		})
 		if err != nil {
 			writeErrResponse(fastReq, &ecode.APIError{Code: ecode.ServerErrorCode, Message: "Upgrade websocket: " + err.Error()})
-			return
 		}
-
+		return
 	} else if method == "POST" || method == "PUT" {
-		bs = fastReq.PostBody()
+		reqBody = fastReq.PostBody()
 	} else {
-		bs = fastReq.URI().QueryString()
+		reqBody = fastReq.URI().QueryString()
 		decoder = queryDecoder
 	}
-
-	if len(bs) > 0 {
-		if err := decoder(bs, req); err != nil {
-			writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "Decode request body failed: " + err.Error()})
-			return
-		}
-	}
-
-	ctx := context.Background()
-
-	// Middleware
-	for i := range s.middlewares {
-		mware := s.middlewares[len(s.middlewares)-i-1]
-		realMethod = func(mm middleware.MethodFunc) middleware.MethodFunc {
-			return func(ctx context.Context, req, rsp interface{}) error {
-				return mware(ctx, fastReq, mm, req, rsp)
-			}
-		}(realMethod)
-	}
-	err := realMethod(ctx, req, rsp)
-	if err != nil {
-		writeErrResponse(fastReq, err)
-		return
-	}
-
-	fastReq.Response.Header.Set("Content-Type", "application/json")
-	bs, err = encoder(rsp)
-	if err != nil {
-		writeErrResponse(fastReq, fmt.Errorf("marshal rsp error: %v", err))
-	}
-	fastReq.Write(bs)
+	doCallFunc()
 }
 
 func (s *Server) getMethodFactory(method, path string) methodFactory {
