@@ -14,23 +14,13 @@ type streamImp struct {
 	closed bool
 }
 
-func (s *streamImp) Recv(msg interface{}) error {
-	if ss, ok := msg.(*[]byte); ok {
-		_, bs, err := s.conn.ReadMessage()
-		if err != nil {
-			return err
-		}
-		*ss = bs
-		return nil
-	}
-	return s.conn.ReadJSON(msg)
+func (s *streamImp) Recv() ([]byte, error) {
+	_, bs, err := s.conn.ReadMessage()
+	return bs, err
 }
 
-func (s *streamImp) Send(msg interface{}) error {
-	if ss, ok := msg.([]byte); ok {
-		return s.conn.WriteMessage(websocket.TextMessage, ss)
-	}
-	return s.conn.WriteJSON(msg)
+func (s *streamImp) Send(msg []byte) error {
+	return s.conn.WriteMessage(websocket.TextMessage, msg)
 }
 
 func (s *streamImp) close() {

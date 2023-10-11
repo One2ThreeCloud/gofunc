@@ -179,6 +179,8 @@ func (s *Server) serve(fastReq *fasthttp.RequestCtx) {
 
 	var reqBody []byte
 	decoder := jsonDecoder
+	isWebsocket := s.streamMethods[path]
+	var stream *streamImp
 
 	doCallFunc := func() {
 		if len(reqBody) > 0 {
@@ -200,6 +202,9 @@ func (s *Server) serve(fastReq *fasthttp.RequestCtx) {
 			}(realMethod)
 		}
 		err := realMethod(ctx, req, rsp)
+		if isWebsocket {
+			return
+		}
 		if err != nil {
 			writeErrResponse(fastReq, err)
 			return
@@ -213,25 +218,15 @@ func (s *Server) serve(fastReq *fasthttp.RequestCtx) {
 		fastReq.Write(reqBody)
 	}
 
-	var stream *streamImp
-	if s.streamMethods[path] {
+	if isWebsocket {
 		err := upgrader.Upgrade(fastReq, func(conn *websocket.Conn) {
 			stream = rsp.(*streamImp)
 			stream.conn = conn
 			defer stream.close()
-
-			// read from websocket
-			var err error
-			_, reqBody, err = conn.ReadMessage()
-			if err != nil {
-				writeErrResponse(fastReq, &ecode.APIError{Code: 400, Message: "read websocket message error: " + err.Error()})
-				return
-			}
-			decoder = queryDecoder
 			doCallFunc()
 		})
 		if err != nil {
-			writeErrResponse(fastReq, &ecode.APIError{Code: ecode.ServerErrorCode, Message: "Upgrade websocket: " + err.Error()})
+			log.Println("Upgrade websocket: error", err.Error())
 		}
 		return
 	} else if method == "POST" || method == "PUT" {
@@ -275,16 +270,21 @@ func parseMethods(m *methodInfo) error {
 		return fmt.Errorf("first argment in %s.%s should be context.Context", handlerName, method.Name)
 	}
 
-	if req.Kind() != reflect.Ptr || req.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("the type of second argment in %s/%s should be pointer to struct", handlerName, method.Name)
-	}
 	if strings.HasPrefix(method.Name, "Stream") {
-		if rsp.Kind() != reflect.Interface || rsp.Name() != "SocketStream" {
-			return fmt.Errorf("the type of third argment in %s/%s should be *websocket.SocketStream", handlerName, method.Name)
+		if req.Kind() != reflect.Interface || req.Name() != "RecvStream" {
+			return fmt.Errorf("the type of third argment in %s/%s should be websocket.RecvStream", handlerName, method.Name)
+		}
+		if rsp.Kind() != reflect.Interface || rsp.Name() != "SendStream" {
+			return fmt.Errorf("the type of third argment in %s/%s should be websocket.SendStream", handlerName, method.Name)
 		}
 		m.isWebsocket = true
-	} else if rsp.Kind() != reflect.Ptr || rsp.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("the type of third argment in %s/%s should be pointer to struct", handlerName, method.Name)
+	} else {
+		if req.Kind() != reflect.Ptr || req.Elem().Kind() != reflect.Struct {
+			return fmt.Errorf("the type of second argment in %s/%s should be pointer to struct", handlerName, method.Name)
+		}
+		if rsp.Kind() != reflect.Ptr || rsp.Elem().Kind() != reflect.Struct {
+			return fmt.Errorf("the type of third argment in %s/%s should be pointer to struct", handlerName, method.Name)
+		}
 	}
 
 	ret := method.Type.Out(0)
@@ -314,13 +314,15 @@ func parseMethods(m *methodInfo) error {
 	}
 
 	m.factory = func() (middleware.MethodFunc, interface{}, interface{}) {
-		var rspVal interface{}
+		var rspVal, reqVal interface{}
 		if m.isWebsocket {
-			rspVal = &streamImp{}
+			reqVal = &streamImp{}
+			rspVal = reqVal
 		} else {
+			reqVal = reflect.New(req.Elem()).Interface()
 			rspVal = reflect.New(rsp.Elem()).Interface()
 		}
-		return callFunc, reflect.New(req.Elem()).Interface(), rspVal
+		return callFunc, reqVal, rspVal
 	}
 	m.reqType = req
 	m.rspType = req

@@ -1,6 +1,9 @@
 package websocket
 
-type SocketStream interface {
-	Recv(interface{}) error
-	Send(interface{}) error
+type RecvStream interface {
+	Recv() ([]byte, error)
+}
+
+type SendStream interface {
+	Send([]byte) error
 }

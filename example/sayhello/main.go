@@ -43,17 +43,16 @@ func (h *helloHandler) Post(ctx context.Context, req *PostRequest, rsp *Response
 	return nil
 }
 
-func (s *helloHandler) Stream(ctx context.Context, req *StreamRequest, stream websocket.SocketStream) error {
+func (s *helloHandler) Stream(ctx context.Context, req websocket.RecvStream, rsp websocket.SendStream) error {
 	ct := 0
-	fmt.Println("req is", req.Name)
 	for {
-		var msg []byte
-		if err := stream.Recv(&msg); err != nil {
+		msg, err := req.Recv()
+		if err != nil {
 			return err
 		}
 		fmt.Println("recv", string(msg))
 		ct++
-		if err := stream.Send([]byte(fmt.Sprintf("hello %s %s(%d)", req.Name, string(msg), ct))); err != nil {
+		if err := rsp.Send([]byte(fmt.Sprintf("hello %s %d times", string(msg), ct))); err != nil {
 			return err
 		}
 		fmt.Println("send", string(msg))
