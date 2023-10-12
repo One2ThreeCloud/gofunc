@@ -24,7 +24,13 @@ type APIError struct {
 type arr2d [][]int
 
 var checkSysError = func(code int) bool {
-	return code > 0
+	if 400 <= code && code < 500 {
+		return false
+	}
+	if 4000 <= code && code < 5000 {
+		return false
+	}
+	return code != 0
 }
 
 func (e *APIError) Error() string {
