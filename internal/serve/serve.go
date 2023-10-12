@@ -334,11 +334,11 @@ func formatPath(prefix, handlerName, methodName string) string {
 	httpMethod := getHttpMethod(methodName)
 	if strings.HasPrefix(methodName, "Stream") {
 		handlerName += "-ws"
-		methodName = strings.TrimSuffix(methodName, "Stream")
+		methodName = strings.TrimPrefix(methodName, "Stream")
 	} else {
-		methodName = strings.TrimSuffix(methodName, httpMethod)
+		methodName = strings.TrimPrefix(methodName, httpMethod)
 	}
-	methodName = strings.TrimSuffix(methodName, httpMethod)
+	methodName = strings.TrimPrefix(methodName, httpMethod)
 
 	handlerName = strcase.ToKebab(handlerName)
 	methodName = strcase.ToKebab(methodName)
